@@ -18,6 +18,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { formatLocalDate, formatLocalTime } from "@/lib/dateTime";
 import type { Task, Priority } from "@/types/task";
 
 interface Props {
@@ -27,20 +28,23 @@ interface Props {
   onSubmit: (data: Omit<Task, "id" | "createdAt"> & { id?: string }) => void;
 }
 
-const todayISO = () => new Date().toISOString().slice(0, 10);
+const emptyForm = () => {
+  const now = new Date();
 
-const empty = {
-  title: "",
-  description: "",
-  date: todayISO(),
-  time: "",
-  location: "",
-  priority: "medium" as Priority,
-  tags: "",
+  return {
+    title: "",
+    description: "",
+    date: formatLocalDate(now),
+    time: formatLocalTime(now),
+    duration: "",
+    location: "",
+    priority: "medium" as Priority,
+    tags: "",
+  };
 };
 
 export const TaskDialog = ({ open, onOpenChange, initial, onSubmit }: Props) => {
-  const [form, setForm] = useState(empty);
+  const [form, setForm] = useState(emptyForm);
 
   useEffect(() => {
     if (open) {
@@ -50,12 +54,13 @@ export const TaskDialog = ({ open, onOpenChange, initial, onSubmit }: Props) => 
           description: initial.description ?? "",
           date: initial.date,
           time: initial.time ?? "",
+          duration: initial.duration?.toString() ?? "",
           location: initial.location ?? "",
           priority: initial.priority,
           tags: (initial.tags ?? []).join(", "),
         });
       } else {
-        setForm(empty);
+        setForm(emptyForm());
       }
     }
   }, [open, initial]);
@@ -69,6 +74,7 @@ export const TaskDialog = ({ open, onOpenChange, initial, onSubmit }: Props) => 
       description: form.description.trim() || undefined,
       date: form.date,
       time: form.time || undefined,
+      duration: form.duration ? Number(form.duration) : undefined,
       location: form.location.trim() || undefined,
       priority: form.priority,
       tags: form.tags.split(",").map((t) => t.trim()).filter(Boolean),
@@ -133,7 +139,7 @@ export const TaskDialog = ({ open, onOpenChange, initial, onSubmit }: Props) => 
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-3 gap-4">
             <div className="space-y-2">
               <Label htmlFor="location">Location</Label>
               <Input
@@ -141,6 +147,18 @@ export const TaskDialog = ({ open, onOpenChange, initial, onSubmit }: Props) => 
                 value={form.location}
                 onChange={(e) => setForm({ ...form, location: e.target.value })}
                 placeholder="e.g. Office"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="duration">Duration</Label>
+              <Input
+                id="duration"
+                type="number"
+                min={0}
+                step={15}
+                value={form.duration}
+                onChange={(e) => setForm({ ...form, duration: e.target.value })}
+                placeholder="Minutes"
               />
             </div>
             <div className="space-y-2">

@@ -113,6 +113,12 @@ export const TaskCard = ({ task, onEdit, onDelete, onToggle }: Props) => {
                 {task.time}
               </span>
             )}
+            {typeof task.duration === "number" && (
+              <span className="inline-flex items-center gap-1.5">
+                <Clock className="h-3.5 w-3.5" />
+                {task.duration} min
+              </span>
+            )}
             {task.location && (
               <span className="inline-flex items-center gap-1.5">
                 <MapPin className="h-3.5 w-3.5" />

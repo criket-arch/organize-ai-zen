@@ -1,13 +1,36 @@
 import { useEffect, useState, useCallback } from "react";
+import { formatLocalDate } from "@/lib/dateTime";
 import type { Task, SortMode } from "@/types/task";
 
+const API_BASE = import.meta.env.VITE_API_URL ?? "";
+const hasBackend = Boolean(API_BASE);
 const STORAGE_KEY = "taiskmaster.tasks.v1";
+
+type PersistableTask = Task & {
+  created_at?: string;
+};
+
+const normalizeTask = (task: PersistableTask): Task => ({
+  id: task.id,
+  title: task.title,
+  description: task.description ?? undefined,
+  date: task.date,
+  time: task.time ?? undefined,
+  duration: task.duration ?? undefined,
+  location: task.location ?? undefined,
+  priority: task.priority,
+  tags: task.tags ?? [],
+  completed: task.completed ?? false,
+  createdAt: task.createdAt ?? task.created_at ?? new Date().toISOString(),
+});
 
 const seedTasks = (): Task[] => {
   const today = new Date();
-  const iso = (d: Date) => d.toISOString().slice(0, 10);
-  const tomorrow = new Date(today); tomorrow.setDate(today.getDate() + 1);
-  const inThree = new Date(today); inThree.setDate(today.getDate() + 3);
+  const iso = (d: Date) => formatLocalDate(d);
+  const tomorrow = new Date(today);
+  tomorrow.setDate(today.getDate() + 1);
+  const inThree = new Date(today);
+  inThree.setDate(today.getDate() + 3);
 
   return [
     {
@@ -66,7 +89,7 @@ const seedTasks = (): Task[] => {
   ];
 };
 
-const load = (): Task[] => {
+const loadLocal = (): Task[] => {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) {
@@ -80,8 +103,63 @@ const load = (): Task[] => {
   }
 };
 
-const save = (tasks: Task[]) => {
+const saveLocal = (tasks: Task[]) => {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks));
+};
+
+const fetchTasks = async (): Promise<Task[]> => {
+  if (!hasBackend) {
+    return loadLocal();
+  }
+
+  const res = await fetch(`${API_BASE}/api/tasks`);
+  const data = await res.json();
+  return Array.isArray(data) ? data.map(normalizeTask) : [];
+};
+
+const createTask = async (task: Omit<Task, "id" | "createdAt">): Promise<Task> => {
+  if (!hasBackend) {
+    const next: Task = { ...task, id: crypto.randomUUID(), createdAt: new Date().toISOString() };
+    const all = [...loadLocal(), next];
+    saveLocal(all);
+    return next;
+  }
+
+  const res = await fetch(`${API_BASE}/api/tasks`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(task),
+  });
+  const created = await res.json();
+  return normalizeTask(created);
+};
+
+const patchTask = async (id: string, patch: Partial<Task>): Promise<Task> => {
+  if (!hasBackend) {
+    const existing = loadLocal();
+    const updated = existing.map((t) => (t.id === id ? { ...t, ...patch } : t));
+    saveLocal(updated);
+    const patched = updated.find((t) => t.id === id);
+    if (!patched) throw new Error("Task not found");
+    return patched;
+  }
+
+  const res = await fetch(`${API_BASE}/api/tasks/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  const updated = await res.json();
+  return normalizeTask(updated);
+};
+
+const deleteRemoteTask = async (id: string): Promise<void> => {
+  if (!hasBackend) {
+    saveLocal(loadLocal().filter((task) => task.id !== id));
+    return;
+  }
+
+  await fetch(`${API_BASE}/api/tasks/${id}`, { method: "DELETE" });
 };
 
 // Lightweight pub-sub so multiple components stay in sync.
@@ -89,39 +167,79 @@ const listeners = new Set<() => void>();
 const notify = () => listeners.forEach((l) => l());
 
 export const useTasks = () => {
-  const [tasks, setTasks] = useState<Task[]>(() => load());
+  const [tasks, setTasks] = useState<Task[]>([]);
 
   useEffect(() => {
-    const fn = () => setTasks(load());
+    let mounted = true;
+
+    fetchTasks()
+      .then((remoteTasks) => {
+        if (mounted) setTasks(remoteTasks);
+      })
+      .catch(() => {
+        if (mounted) setTasks([]);
+      });
+
+    const fn = () => {
+      fetchTasks().then((remoteTasks) => setTasks(remoteTasks));
+    };
+
     listeners.add(fn);
-    return () => { listeners.delete(fn); };
+    return () => {
+      mounted = false;
+      listeners.delete(fn);
+    };
   }, []);
 
-  const persist = useCallback((next: Task[]) => {
-    save(next);
+  const persist = useCallback((next: Task[] | ((current: Task[]) => Task[])) => {
     setTasks(next);
     notify();
   }, []);
 
-  const addTask = useCallback((t: Omit<Task, "id" | "createdAt">) => {
-    const next: Task = { ...t, id: crypto.randomUUID(), createdAt: new Date().toISOString() };
-    persist([...load(), next]);
-    return next;
+  const addTask = useCallback(async (t: Omit<Task, "id" | "createdAt">) => {
+    const nextTask = await createTask(t);
+    persist((current) => [...current, nextTask]);
+    return nextTask;
   }, [persist]);
 
-  const updateTask = useCallback((id: string, patch: Partial<Task>) => {
-    persist(load().map((t) => (t.id === id ? { ...t, ...patch } : t)));
+  const updateTask = useCallback(async (id: string, patch: Partial<Task>) => {
+    const nextTask = await patchTask(id, patch);
+    persist((current) => current.map((t) => (t.id === id ? nextTask : t)));
   }, [persist]);
 
-  const deleteTask = useCallback((id: string) => {
-    persist(load().filter((t) => t.id !== id));
+  const deleteTask = useCallback(async (id: string) => {
+    await deleteRemoteTask(id);
+    persist((current) => current.filter((t) => t.id !== id));
   }, [persist]);
 
-  const replaceAll = useCallback((next: Task[]) => persist(next), [persist]);
+  const replaceAll = useCallback(async (next: Task[]) => {
+    if (!hasBackend) {
+      saveLocal(next);
+      persist(next);
+      return;
+    }
 
-  const toggleComplete = useCallback((id: string) => {
-    persist(load().map((t) => (t.id === id ? { ...t, completed: !t.completed } : t)));
-  }, [persist]);
+    const existingIds = new Set(tasks.map((t) => t.id));
+    await Promise.all(next.map(async (task) => {
+      if (!existingIds.has(task.id)) {
+        await createTask(task);
+      } else {
+        await patchTask(task.id, task);
+      }
+    }));
+
+    const nextIds = new Set(next.map((task) => task.id));
+    await Promise.all(tasks.filter((task) => !nextIds.has(task.id)).map((task) => deleteRemoteTask(task.id)));
+
+    persist(next);
+  }, [persist, tasks]);
+
+  const toggleComplete = useCallback(async (id: string) => {
+    const task = tasks.find((t) => t.id === id);
+    if (!task) return;
+    const nextTask = await patchTask(id, { completed: !task.completed });
+    persist((current) => current.map((t) => (t.id === id ? nextTask : t)));
+  }, [persist, tasks]);
 
   return { tasks, addTask, updateTask, deleteTask, replaceAll, toggleComplete };
 };

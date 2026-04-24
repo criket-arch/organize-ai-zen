@@ -6,6 +6,7 @@ export interface Task {
   description?: string;
   date: string; // ISO date (yyyy-mm-dd)
   time?: string; // HH:mm
+  duration?: number; // Minutes
   location?: string;
   priority: Priority;
   tags?: string[];
